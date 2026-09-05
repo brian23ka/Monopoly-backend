@@ -103,12 +103,3 @@ class GameService:
             raise ValueError("Game not found.")
 
 game_service = GameService()
-
-@router.post("/buy")
-def buy_property(room_id: str, property_id: int):
-    try:
-        result = game_service.buy_property(room_id, property_id)
-        game_service.save_game(room_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"success": result}

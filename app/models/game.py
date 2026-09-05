@@ -43,8 +43,15 @@ class Game:
         self.community_deck = []
         self.pending_trade = None
         self.trade_history = []
+        self.last_dice = [1, 1]
+        self.turn_rolled = False
+        self.message = "Waiting for players to join."
+        self.pending_purchase = None
+        self.last_card = None
 
     def add_player(self, player_name: str):
+        if len(self.players) >= 6:
+            raise ValueError("Game is full")
         if any(p.name == player_name for p in self.players):
             raise ValueError("Player already exists")
         player = Player(player_name)
@@ -55,12 +62,98 @@ class Game:
             raise ValueError("Need at least 2 players")
         self.started = True
         self.current_turn = 0
+        self.turn_rolled = False
+        self.message = f"{self.players[0].name}'s turn. Roll the dice."
+
+    def roll_for_player(self, player_name):
+        if not self.started:
+            raise ValueError("Game has not started")
+        current_player = self.get_current_player()
+        if current_player.name != player_name:
+            raise ValueError("It is not your turn")
+        if self.pending_purchase is not None:
+            raise ValueError("Buy or pass on the available property first")
+        if self.turn_rolled:
+            raise ValueError("End your turn before rolling again")
+
+        dice = self.roll_dice()
+        self.last_dice = [dice["dice_1"], dice["dice_2"]]
+        self.turn_rolled = True
+        previous_position = current_player.position
+        current_player.move(dice["total"])
+        if current_player.position < previous_position:
+            current_player.earn(200)
+            self.message = f"{current_player.name} passed GO and collected $200."
+
+        square = current_player.position
+        if square == 30:
+            current_player.position = 10
+            self.message = f"{current_player.name} was sent to jail."
+        elif square in (4, 38):
+            tax = 200 if square == 4 else 100
+            current_player.pay(tax)
+            self.message = f"{current_player.name} paid ${tax} in tax."
+        elif square in (7, 22, 36):
+            self.last_card = draw_chance_card()
+            self._apply_card(current_player, self.last_card)
+        elif square in (2, 17, 33):
+            self.last_card = draw_community_chest_card()
+            self._apply_card(current_player, self.last_card)
+        elif square in self.properties:
+            prop = self.properties[square]
+            if prop.owner is None:
+                self.pending_purchase = square
+                self.message = f"{prop.name} is available for ${prop.price}."
+            elif prop.owner != current_player:
+                rent = prop.get_rent()
+                current_player.pay(rent)
+                prop.owner.earn(rent)
+                self.message = f"{current_player.name} paid ${rent} rent to {prop.owner.name}."
+            else:
+                self.message = f"{current_player.name} landed on {prop.name}."
+        else:
+            self.message = f"{current_player.name} landed on space {square}."
+        return self.last_dice
+
+    def _apply_card(self, player, card):
+        effect = card.get("effect")
+        if effect == "earn":
+            player.earn(card.get("amount", 0))
+        elif effect == "pay":
+            player.pay(card.get("amount", 0))
+        elif effect == "move":
+            if card.get("jail"):
+                player.position = 10
+            else:
+                player.position = card.get("steps", 0) % 40
+        self.message = f"{player.name} drew a card: {card['message']}"
+
+    def buy_current_property(self, player_name):
+        if self.pending_purchase is None:
+            raise ValueError("There is no property to buy")
+        if self.get_current_player().name != player_name:
+            raise ValueError("It is not your turn")
+        property_id = self.pending_purchase
+        if not self.properties[property_id].buy(self.get_current_player()):
+            raise ValueError("You cannot afford this property")
+        self.pending_purchase = None
+        self.message = f"{player_name} bought {self.properties[property_id].name}."
+
+    def pass_purchase(self, player_name):
+        if self.get_current_player().name != player_name:
+            raise ValueError("It is not your turn")
+        self.pending_purchase = None
+        self.message = f"{player_name} passed on the property."
 
     def roll_dice(self):
         return roll_dice()
 
     def next_turn(self):
         self.current_turn = (self.current_turn + 1) % len(self.players)
+        self.turn_rolled = False
+        self.pending_purchase = None
+        self.last_card = None
+        self.message = f"{self.players[self.current_turn].name}'s turn. Roll the dice."
         return self.players[self.current_turn].name
 
     def get_state(self):
@@ -71,7 +164,13 @@ class Game:
                 for p in self.players
             ],
             "current_turn": self.players[self.current_turn].name if self.players else None,
-            "started": self.started
+            "started": self.started,
+            "dice": self.last_dice,
+            "turn_rolled": self.turn_rolled,
+            "message": self.message,
+            "pending_purchase": self.pending_purchase,
+            "card": self.last_card,
+            "game_over": len([p for p in self.players if p.money >= 0]) <= 1 if self.players else False
         }
 
     def move_current_player(self, steps: int):
